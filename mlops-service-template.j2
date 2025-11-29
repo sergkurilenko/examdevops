@@ -1,0 +1,47 @@
+# SystemD Service файл для MLOps сервиса
+# Шаблон: mlops.service.j2
+# Целевое расположение: /etc/systemd/system/mlops.service
+
+[Unit]
+Description=MLOps ML Classification Service
+Documentation=https://github.com/your-repo/mlops-project
+After=network.target
+
+[Service]
+Type=simple
+User={{ mlops_user }}
+Group={{ mlops_group }}
+WorkingDirectory={{ mlops_home }}/app
+Environment="PATH={{ mlops_home }}/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile={{ mlops_home }}/app/.env
+
+# Команда запуска
+ExecStart={{ mlops_home }}/venv/bin/python {{ mlops_home }}/app/main.py
+
+# Автоматический перезапуск при падении
+Restart=always
+RestartSec=10
+
+# Ограничения ресурсов
+{% if memory_limit > 0 %}
+MemoryLimit={{ memory_limit }}M
+{% endif %}
+
+{% if cpu_limit > 0 %}
+CPUQuota={{ (cpu_limit * 100) | int }}%
+{% endif %}
+
+# Логирование
+StandardOutput=append:{{ mlops_home }}/logs/mlops.log
+StandardError=append:{{ mlops_home }}/logs/mlops-error.log
+
+# Безопасность
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Graceful shutdown
+TimeoutStopSec={{ graceful_timeout }}
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

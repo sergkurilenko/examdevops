@@ -1,0 +1,180 @@
+---
+# Ansible Playbook для развертывания MLOps проекта
+# Файл: deploy-playbook.yml
+# 
+# Использование:
+# ansible-playbook -i inventory.ini deploy-playbook.yml
+#
+# Для локального развертывания:
+# ansible-playbook -i localhost, -c local deploy-playbook.yml
+
+- name: Deploy MLOps Service
+  hosts: all
+  become: yes
+  vars_files:
+    - vars/main.yml
+  
+  tasks:
+    # 1. Установка системных зависимостей
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install system dependencies
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+          - git
+          - curl
+          - build-essential
+        state: present
+      when: ansible_os_family == "Debian"
+
+    # 2. Создание пользователя для сервиса
+    - name: Create mlops user
+      user:
+        name: "{{ mlops_user }}"
+        system: yes
+        shell: /bin/bash
+        home: "{{ mlops_home }}"
+        create_home: yes
+
+    # 3. Создание директорий
+    - name: Create application directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ mlops_user }}"
+        group: "{{ mlops_user }}"
+        mode: '0755'
+      loop:
+        - "{{ mlops_home }}/app"
+        - "{{ mlops_home }}/models"
+        - "{{ mlops_home }}/reports"
+        - "{{ mlops_home }}/logs"
+        - "{{ mlops_home }}/mlruns"
+
+    # 4. Копирование файлов приложения
+    - name: Copy application files
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ mlops_home }}/app/{{ item.dest }}"
+        owner: "{{ mlops_user }}"
+        group: "{{ mlops_user }}"
+        mode: '0644'
+      loop:
+        - { src: 'main.py', dest: 'main.py' }
+        - { src: 'ml_service.py', dest: 'ml_service.py' }
+        - { src: 'monitoring_service.py', dest: 'monitoring_service.py' }
+        - { src: 'index.html', dest: 'index.html' }
+        - { src: 'requirements.txt', dest: 'requirements.txt' }
+
+    # 5. Создание виртуального окружения
+    - name: Create Python virtual environment
+      become_user: "{{ mlops_user }}"
+      command: python3 -m venv "{{ mlops_home }}/venv"
+      args:
+        creates: "{{ mlops_home }}/venv/bin/python"
+
+    # 6. Установка Python зависимостей
+    - name: Install Python dependencies
+      become_user: "{{ mlops_user }}"
+      pip:
+        requirements: "{{ mlops_home }}/app/requirements.txt"
+        virtualenv: "{{ mlops_home }}/venv"
+        virtualenv_command: python3 -m venv
+
+    # 7. Обучение модели
+    - name: Train ML model
+      become_user: "{{ mlops_user }}"
+      command: "{{ mlops_home }}/venv/bin/python {{ mlops_home }}/app/ml_service.py"
+      args:
+        chdir: "{{ mlops_home }}/app"
+        creates: "{{ mlops_home }}/app/model.pkl"
+
+    # 8. Создание systemd service
+    - name: Create systemd service file
+      template:
+        src: templates/mlops.service.j2
+        dest: /etc/systemd/system/mlops.service
+        mode: '0644'
+      notify: Reload systemd
+
+    # 9. Создание конфигурационного файла
+    - name: Create environment configuration
+      template:
+        src: templates/mlops.env.j2
+        dest: "{{ mlops_home }}/app/.env"
+        owner: "{{ mlops_user }}"
+        group: "{{ mlops_user }}"
+        mode: '0600'
+
+    # 10. Настройка firewall (UFW)
+    - name: Allow service port through firewall
+      ufw:
+        rule: allow
+        port: "{{ mlops_port }}"
+        proto: tcp
+      when: enable_firewall | bool
+
+    # 11. Запуск и включение автозапуска сервиса
+    - name: Enable and start MLOps service
+      systemd:
+        name: mlops
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    # 12. Проверка состояния сервиса
+    - name: Wait for service to be ready
+      uri:
+        url: "http://localhost:{{ mlops_port }}/health"
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 10
+      delay: 5
+
+    # 13. Вывод информации о развертывании
+    - name: Display deployment information
+      debug:
+        msg:
+          - "MLOps Service deployed successfully!"
+          - "Service URL: http://{{ ansible_host }}:{{ mlops_port }}"
+          - "API Documentation: http://{{ ansible_host }}:{{ mlops_port }}/docs"
+          - "Health Check: http://{{ ansible_host }}:{{ mlops_port }}/health"
+          - "Service User: {{ mlops_user }}"
+          - "Application Path: {{ mlops_home }}/app"
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Restart mlops service
+      systemd:
+        name: mlops
+        state: restarted
+
+# Post-deployment tasks
+- name: Post-deployment verification
+  hosts: all
+  tasks:
+    - name: Verify service is running
+      command: systemctl status mlops
+      register: service_status
+      changed_when: false
+
+    - name: Check API endpoints
+      uri:
+        url: "http://localhost:{{ mlops_port }}/{{ item }}"
+        method: GET
+      loop:
+        - health
+        - metrics
+      register: api_check
+      failed_when: api_check.status != 200

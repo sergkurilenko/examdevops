@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  mlops-service:
+    build: .
+    container_name: mlops-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - mlops-models:/app/models
+      - mlops-reports:/app/reports
+      - mlops-logs:/app/logs
+      - mlops-mlruns:/app/mlruns
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  mlops-models:
+  mlops-reports:
+  mlops-logs:
+  mlops-mlruns:
